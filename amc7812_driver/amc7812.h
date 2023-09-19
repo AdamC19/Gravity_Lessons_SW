@@ -51,7 +51,8 @@
 #define AMC_CONFIG_0_GALR        8
 #define AMC_CONFIG_0_SET_MASK    0x3E00
 
-#define AMC_SET_CMODE_AUTO(word)            (word |=  (1 << AMC_CONFIG_0_CMODE))
+#define AMC_SET_ADC_REF_INT(word)           (word |= (1 << AMC_CONFIG_0_ADC_REF_INT))
+#define AMC_SET_CMODE_AUTO(word)            (word |= (1 << AMC_CONFIG_0_CMODE))
 #define AMC_SET_CMODE_DIRECT(word)          (word &= ~(1 << AMC_CONFIG_0_CMODE))
 #define AMC_SET_INTERNAL_CONV_TRIG(word)    (word |= (1 << AMC_CONFIG_0_ICONV))
 #define AMC_SET_EXTERNAL_CONV_TRIG(word)    (word &= ~(1 << AMC_CONFIG_0_ICONV))
@@ -65,6 +66,9 @@
 #define AMC_CONV_RATE_62P5K         (3 << AMC_CONFIG_1_CONV_RATE)
 
 #define AMC_SET_CONV_RATE(word, rate)       (word = (word & ~(0x3 << AMC_CONFIG_1_CONV_RATE)) | rate)
+
+/* Default values */
+#define AMC_DFLT_DEVICE_ID          0x1220
 
 typedef union adc_sample_union {
     struct {
@@ -86,16 +90,16 @@ typedef struct amc7812_struct {
     adc_sample_t samples[16];
 }Amc7812_t;
 
-struct circular_buffer {
-    unsigned char * data;
-    size_t size;
-    size_t length;
-    int position;
-};
+// struct circular_buffer {
+//     unsigned char * data;
+//     size_t size;
+//     size_t length;
+//     int position;
+// };
 
-static void circ_buffer_read(struct circular_buffer * circ, unsigned char * dst, size_t len);
-static void circ_buffer_write(struct circular_buffer * circ, unsigned char * src, size_t len);
-static void circ_buffer_read_all(struct circular_buffer * circ, unsigned char * dst);
+// static void circ_buffer_read(struct circular_buffer * circ, unsigned char * dst, size_t len);
+// static void circ_buffer_write(struct circular_buffer * circ, unsigned char * src, size_t len);
+// static void circ_buffer_read_all(struct circular_buffer * circ, unsigned char * dst);
 
 // The prototype functions for the character driver -- must come before the struct definition
 static int     dev_open(struct inode *, struct file *);
@@ -106,7 +110,9 @@ static ssize_t dev_write(struct file *, const char *, size_t, loff_t *);
 // prototypes for AMC7812 specific things
 static void amc7812_init_gpio(void);
 static void amc7812_cleanup_gpio(void);
-static void amc7812_init_spi();
+static int amc7812_init_spi(void);
+static int amc7812_init(void);
+static unsigned int amc7812_get_device_id(Amc7812_t* daq);
 static void amc7812_spi_xfer(Amc7812_t* daq);
 static void amc7812_soft_reset(Amc7812_t* daq);
 static void amc7812_start_conv(Amc7812_t* daq);
