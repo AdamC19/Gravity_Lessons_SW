@@ -3,6 +3,7 @@
 
 #include <linux/interrupt.h>
 #include <linux/spi/spi.h>
+#include <linux/types.h>
 
 
 #define AMC_RESET_GPIO  22
@@ -70,23 +71,23 @@
 /* Default values */
 #define AMC_DFLT_DEVICE_ID          0x1220
 
-typedef union adc_sample_union {
-    struct {
-        unsigned char index;
-        unsigned long long timestamp;
-        unsigned short value;
-    };
-    unsigned char data[11];
+typedef struct adc_sample_union {
+        uint8_t index;
+        int64_t timestamp;
+        int16_t value;
 }adc_sample_t;
 
 
 typedef struct amc7812_struct {
     unsigned int dav_irq_number;
-    struct spi_controller * spi_ctrl;
+    struct spi_master * spi_master;
+    struct spi_board_info spi_info;
     struct spi_device * spi_dev;
     unsigned char tx_buffer[3];
     unsigned char rx_buffer[3];
+    unsigned long long delta_ns;
     unsigned long long int_timestamp;
+    bool interrupt_fired;
     adc_sample_t samples[16];
 }Amc7812_t;
 

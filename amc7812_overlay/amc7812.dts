@@ -34,10 +34,18 @@
 		};
 	};
 
+	fragment@4 {
+		target = <&spidev1>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
 	__overrides__ {
 		cs0_pin  = <&frag0>,"brcm,pins:0",
 			   <&frag1>,"cs-gpios:4";
 		no_miso = <0>,"=3";
         cs0_spidev = <&spidev0>,"status";
+		cs1_spidev = <&spidev1>,"status";
 	};
 };
