@@ -30,7 +30,7 @@
 
 /* This number is really only approximate (exact number would be 520.8333...)*/
 #define SINGLE_CYCLE_SAMPLE_COUNT    521
-
+#define SINGLE_CYCLE_TIME_US         16667.0
 
 int filter_taps[FIR_FILTER_TAP_NUM] = {
     138,
@@ -118,25 +118,26 @@ int main(int argc, char** argv){
     std::vector<int64_t> real_power_sums(CHANNEL_COUNT);
     int64_t v_sns = 0;
     int64_t v_comm = 2048;
-    int cycles_per_output = 1;
+    int cycles_per_output = 8;
     auto timestamp = std::chrono::high_resolution_clock::now();
     double avg_loop_time_us = 0.0;
 
-    std::cout << "SIZEOF adc_sample_t: " << sizeof(adc_sample_t) << std::endl;
     while(true){
+        timestamp = std::chrono::high_resolution_clock::now();
         int readnum = read(daq_fd, buffer, 1024);
-        dump_buffer(buffer, readnum);
+        // dump_buffer(buffer, readnum);
         auto read_complete_timestamp = std::chrono::high_resolution_clock::now();
         auto loop_time = read_complete_timestamp - timestamp;
-        timestamp = read_complete_timestamp;
+        // timestamp = read_complete_timestamp;
         avg_loop_time_us += std::chrono::duration_cast<std::chrono::microseconds>(loop_time).count();
 
         if (readnum == 0){
-            printf("Timed out trying to get data from DAQ...\n");
+            std::this_thread::sleep_for(std::chrono::microseconds(1000));
+            // printf("Timed out trying to get data from DAQ...\n");
         }else{
             int offset = 0;
             // auto sample = samples.begin();
-            for(int i = 0; i < 16; i++){
+            for(int i = 0; i < CHANNEL_COUNT; i++){
                 memcpy((uint8_t*)&(samples.at(i).index), buffer + offset, 1);
                 offset += 1;
                 memcpy((uint8_t*)&(samples.at(i).timestamp), buffer + offset, 8);
@@ -145,13 +146,16 @@ int main(int argc, char** argv){
                 offset += 2;
 
                 if (samples.at(i).index >= 0 && samples.at(i).index < CHANNEL_COUNT){
+                    int64_t filt_sample = 0;
                     if (samples.at(i).index != COMM_MODE_CH){
                         filters.at(samples.at(i).index).put((int)(samples.at(i).value - v_comm)); // subtract common mode here
+                        filt_sample = samples.at(i).value - v_comm;
                     }else{
                         filters.at(samples.at(i).index).put((int)samples.at(i).value); // don't subtrace v_comm
+                        filt_sample = samples.at(i).value;
                     }
                     
-                    int64_t filt_sample = (int64_t)samples.at(i).value; //(int64_t)(filters.at(samples.at(i).index).get()); //
+                    // int64_t filt_sample = (int64_t)samples.at(i).value; //(int64_t)(filters.at(samples.at(i).index).get()); //
 
                     rms_sums[samples.at(i).index] += filt_sample*filt_sample;
 
@@ -169,7 +173,8 @@ int main(int argc, char** argv){
             }
             sample_count++;
             
-            if(sample_count >= cycles_per_output*SINGLE_CYCLE_SAMPLE_COUNT){
+            if(avg_loop_time_us >= cycles_per_output*SINGLE_CYCLE_TIME_US){
+            // if(sample_count >= cycles_per_output*SINGLE_CYCLE_SAMPLE_COUNT){
                 avg_loop_time_us = avg_loop_time_us/sample_count;
                 double rms_v = sqrtf64(1.0*rms_sums[VOLT_SNS_CH]/sample_count);
                 std::cout << "V_COMM: " << v_comm << std::endl;
@@ -180,12 +185,14 @@ int main(int argc, char** argv){
                     power_samples->at(i).set_index(i);
                     power_samples->at(i).set_real_power(1.0*real_power_sums[i]/sample_count);
                     power_samples->at(i).set_apparent_power(rms_v * this_rms);
-                    // std::cout << power_samples->at(i).to_json() << std::endl;
+                    std::cout << power_samples->at(i).to_json() << std::endl;
                     real_power_sums[i] = 0;
                     rms_sums[i] = 0;
                 }
                 avg_loop_time_us = 0.0;
                 sample_count = 0;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                timestamp = std::chrono::high_resolution_clock::now();
             }
         }
     }

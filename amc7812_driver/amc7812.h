@@ -11,7 +11,7 @@
 #define AMC_CNVT_GPIO   24
 
 #define AMC_SPI_DESCRIPTION "amc7812-spi-driver"
-#define AMC_SPI_SPEED_HZ    8000000
+#define AMC_SPI_SPEED_HZ    16000000
 #define AMC_SPI_MODE        SPI_MODE_1
 
 /* AMC7812 REGISTER MAP */

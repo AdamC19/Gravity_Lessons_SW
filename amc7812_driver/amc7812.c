@@ -25,7 +25,8 @@
 #define CHUNK_DELIM         0xA5
 #define CHUNK_DELIM_COUNT   4
 #define MAX_CHUNKS          8
-#define DATA_BUF_MAX        (16*sizeof(adc_sample_t) + CHUNK_DELIM_COUNT)
+#define SIZEOF_ADC_SAMPLE   11
+#define DATA_BUF_MAX        (16*SIZEOF_ADC_SAMPLE)
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Adam Cordingley");
@@ -42,6 +43,9 @@ static int bytes_available[] = {0, 0};
 static int start_read_index[] = {0, 0}; // index in data buffer at which to begin reading from
 static int active_data_buf  = 0; // indicates which data buffer we're stuffing now
 static volatile bool interrupt_fired = false;
+static struct spi_transfer xfers[17];
+static uint8_t xfer_tx_mem[17*3] = {0};
+static uint8_t xfer_rx_mem[17*3] = {0};
 
 static struct spi_board_info spi_info = {
     .modalias       = AMC_SPI_DESCRIPTION,
@@ -54,77 +58,6 @@ static struct spi_board_info spi_info = {
 static struct class* amc7812_class = NULL;
 static struct device* amc7812_device = NULL;
 static Amc7812_t amc_daq;
-
-///////////////////////////////////////////////////////////////////////////////
-//
-// CIRCULAR BUFFER THINGS
-//
-///////////////////////////////////////////////////////////////////////////////
-
-// static void circ_buffer_read(struct circular_buffer * circ, unsigned char * dst, size_t len){
-//     // FIFO behavior is needed. Find the start first
-//     int start_pos = 0;
-//     if (circ->length > circ->position){
-//         start_pos = circ->size - (circ->length - circ->position);
-//     }else{
-//         start_pos = circ->position - circ->length;
-//     }
-
-//     // Clamp len to the size of the buffer
-//     if (len > circ->size){
-//         len = circ->size;
-//     }
-    
-//     size_t first_chunk_len = len;
-//     size_t last_chunk_len = 0;
-//     if(first_chunk_len + start_pos > circ->size){
-//         first_chunk_len = circ->size - start_pos;
-//         last_chunk_len = len - first_chunk_len;
-//     }
-
-//     memcpy(dst, circ->data + start_pos, first_chunk_len);
-//     circ->length -= first_chunk_len;
-//     if(last_chunk_len > 0){
-//         start_pos += first_chunk_len;
-//         if (start_pos >= circ->size){
-//             start_pos = 0;
-//         }
-//         memcpy(dst + first_chunk_len, circ->data + start_pos, last_chunk_len);
-//         circ->length -= last_chunk_len;
-//     }
-// }
-
-// static void circ_buffer_write(struct circular_buffer * circ, unsigned char * src, size_t len){
-//     size_t first_chunk_len = len;
-//     if (first_chunk_len > circ->size){
-//         first_chunk_len = circ->size;
-//     }
-//     size_t second_chunk_len = 0;
-//     if(first_chunk_len > circ->len - circ->position){
-//         first_chunk_len = circ->len - circ->position;
-//         second_chunk_len = len - first_chunk_len;
-//     }
-//     memcpy(circ->data + circ->position, src, first_chunk_len);
-//     circ->length += first_chunk_len;
-//     circ->position += first_chunk_len;
-
-//     if(circ->position == circ->size){
-//         circ->position = 0;
-//     }
-//     if (second_chunk_len > 0){
-//         memcpy(circ->data, src + first_chunk_len, second_chunk_len);
-//         circ->position += second_chunk_len;
-//         circ->length += second_chunk_len;
-//     }
-//     if (circ->length >= circ->size){
-//         circ->length = circ->size;
-//     }
-// }
-
-
-// static void circ_buffer_read_all(struct circular_buffer * circ, unsigned char * dst){
-//     circ_buffer_read(circ, dst, circ->length);
-// }
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -162,12 +95,14 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
         // probably not enough space in user buffer, return
         return 0;
     }
-    int timeout = 0;
-    while(!interrupt_fired && timeout < 100){
-        udelay(1);
-        timeout++;
-    }
-    if (timeout >= 100 && !interrupt_fired){
+    // int timeout = 0;
+    // interrupt_fired = false; // get aligned with the data.
+    // while(!interrupt_fired && timeout < 1000){
+    //     udelay(1);
+    //     timeout++;
+    // }
+    if (!interrupt_fired){
+        // amc7812_start_conv(&amc_daq);
         return 0;
     }
     interrupt_fired = false;
@@ -176,15 +111,10 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
     // do the SPI transactions
     amc7812_read_all_channels(&amc_daq, amc_daq.int_timestamp, step_per_chan);
     
-    // amc7812_start_conv(&amc_daq);
-
-    /* put all data all at once into buffer */
-
-    // memset(data_buffer, CHUNK_DELIM, CHUNK_DELIM_COUNT);
-    int size_of_data = 0; //CHUNK_DELIM_COUNT;
+    int size_of_data = 0;
     int i = 0;
     for(i = 0; i < 16; i++){
-        if (size_of_data + 11 >= DATA_BUF_MAX){
+        if (size_of_data + SIZEOF_ADC_SAMPLE > DATA_BUF_MAX){
             break;
         }
         memcpy((uint8_t*)data_buffer + size_of_data, (uint8_t*)&(amc_daq.samples[i].index), 1);
@@ -193,9 +123,6 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *of
         size_of_data += 8;
         memcpy((uint8_t*)data_buffer + size_of_data, (uint8_t*)&(amc_daq.samples[i].value), 2);
         size_of_data += 2;
-
-        // memcpy(data_buffer + size_of_data, amc_daq.samples[i].data, sizeof(adc_sample_t));
-        // size_of_data += sizeof(adc_sample_t);
     }
 
     // copy to user in one block
@@ -377,15 +304,6 @@ static int amc7812_init_spi(){
         printk(KERN_ALERT "AMC7812: failed to get the SPI-%d master\n", 0);
         return -1;
     }
-    // Setup the spi_board_info struct
-    // struct spi_board_info spi_info = {
-    //     .modalias       = AMC_SPI_DESCRIPTION,
-    //     .max_speed_hz   = AMC_SPI_SPEED_HZ,
-    //     .bus_num        = 0,
-    //     .chip_select    = 0,
-    //     .mode           = AMC_SPI_MODE
-    // };
-    // amc_daq.spi_info = spi_info;
 
     amc_daq.spi_dev = spi_new_device(amc_daq.spi_master, &spi_info);
     if(amc_daq.spi_dev == NULL){
@@ -416,8 +334,6 @@ static int amc7812_init(){
     pwrdn_reg |= (1 << 13); // enable the internal reference
     amc7812_write_reg(&amc_daq, AMC_REG_POWER_DOWN, pwrdn_reg);
 
-    // amc7812_soft_reset(&amc_daq); // just for good measure
-    
     msleep(10);
 
     unsigned int config_0 = amc7812_read_reg(&amc_daq, AMC_REG_CONFIG_0);
@@ -430,19 +346,42 @@ static int amc7812_init(){
     printk(KERN_INFO "AMC7812: Updating config_0 to %04X.\n", config_0);
     amc7812_write_reg(&amc_daq, AMC_REG_CONFIG_0, config_0);
 
-    unsigned int config_1 = amc7812_read_reg(&amc_daq, AMC_REG_CONFIG_1);
-    AMC_SET_CONV_RATE(config_1, AMC_CONV_RATE_500K);
+    unsigned int config_1 = (0x7 << 4) | AMC_CONV_RATE_500K;//amc7812_read_reg(&amc_daq, AMC_REG_CONFIG_1);
+    // AMC_SET_CONV_RATE(config_1, AMC_CONV_RATE_500K);
     amc7812_write_reg(&amc_daq, AMC_REG_CONFIG_1, config_1);
 
     /* Set up all 16 channels to be converted */
     unsigned int adc_ch_0 = 0;
     adc_ch_0 |= (0x6 << 12); // CH0 and CH1 are accessed as single-ended inputs
     adc_ch_0 |= (0x6 << 9); // CH2 and CH3 are accessed as single-ended inputs
-    adc_ch_0 |= (0x1F);      // CH4 thru CH12 are accessed as single-ended
+    adc_ch_0 |= (0x1FF);      // CH4 thru CH12 are accessed as single-ended
     amc7812_write_reg(&amc_daq, AMC_REG_ADC_CH_0, adc_ch_0);
 
     unsigned int adc_ch_1 = (0x7 << 12); // CH13 thru CH15
     amc7812_write_reg(&amc_daq, AMC_REG_ADC_CH_1, adc_ch_1);
+
+    msleep(10);
+
+    struct spi_transfer *xfer;
+    int i;
+    // Construct the transfer structs for reading all data
+    // only need to do this once since they're the same every time
+    for(i = 0; i < 17; i++){
+        xfer = xfers + i;
+        uint8_t* tx_buf = xfer_tx_mem + (3*i);
+        tx_buf[0] = (AMC_REG_ADC_DATA_0 + i) | (1 << 7);
+        xfer->tx_buf = tx_buf;
+        xfer->rx_buf = xfer_rx_mem + (3*i);
+        xfer->len = 3;
+        xfer->cs_change = true;
+        xfer->bits_per_word = 8;
+        xfer->speed_hz = AMC_SPI_SPEED_HZ;
+        // xfer->word_delay_usecs = 1;
+        // xfer->delay_usecs = 1;
+        // xfer->word_delay = 1;
+        xfer->cs_change_delay_unit = SPI_DELAY_UNIT_NSECS;
+        xfer->cs_change_delay = 50;
+    }
 
     amc7812_start_conv(&amc_daq); // kicks off the continuous auto conversion
     return 0;
@@ -452,7 +391,7 @@ static int amc7812_init(){
 /**
  * Reads and returns the value of the device ID register. Userful for determining
  * if everything is working and the chip is present, etc.
-*/
+ */
 static unsigned int amc7812_get_device_id(Amc7812_t* daq){
     return amc7812_read_reg(daq, AMC_REG_DEVICE_ID);
 }
@@ -463,7 +402,7 @@ static unsigned int amc7812_get_device_id(Amc7812_t* daq){
  * the struct's rx_buffer. Each transfer is 3 bytes long.
  */
 static void amc7812_spi_xfer(Amc7812_t* daq){
-    struct spi_transfer xfer;
+    static struct spi_transfer xfer;
     xfer.tx_buf = daq->tx_buffer;
     xfer.rx_buf = daq->rx_buffer;
     xfer.len = 3;
@@ -477,10 +416,10 @@ static void amc7812_spi_xfer(Amc7812_t* daq){
             udelay(1);
         }
         if(timeout == 100){
-            printk(KERN_ALERT "AMC7812: spi_sync_transfer() failed\n");
+            // printk(KERN_ALERT "AMC7812: spi_sync_transfer() failed\n");
             pr_err("failed: %d", result);
         }else{
-            printk(KERN_INFO "AMC7812: spi_sync_transfer() succeeded with %d attempts", timeout + 1);
+            // printk(KERN_INFO "AMC7812: spi_sync_transfer() succeeded with %d attempts", timeout + 1);
         }
     }else{
         pr_err("daq->spi_dev not defined");
@@ -492,26 +431,20 @@ static void amc7812_spi_xfer(Amc7812_t* daq){
  */
 static void amc7812_read_all_channels(Amc7812_t* daq, unsigned long long timestamp, unsigned long long timestep){
     
-    uint8_t xfer_tx_buf[3];
-    uint8_t xfer_rx_buf[3];
-
-    int i;
-    for(i = 0; i < 17; i++){
-        daq->tx_buffer[0] = (AMC_REG_ADC_DATA_0 + i) | (1 << 7);
-        daq->tx_buffer[1] = 0;
-        daq->tx_buffer[2] = 0;
-        amc7812_spi_xfer(daq);
-        
-        if(i > 0){
+    int result = 0;
+    // xfers holds all our transfers that we setup in amc7812_init
+    if((result = spi_sync_transfer(daq->spi_dev, xfers, 17)) != 0){
+        pr_err("failed: %d", result);
+    }else{
+        int i;
+        for(i = 1; i < 17; i++){
             int j = i - 1;
             daq->samples[j].timestamp = timestamp + (timestep * j); // approx sample time
             daq->samples[j].index = (uint8_t)j;
 
-            // this most recent read result corresponds to the last ADC data point
-            daq->samples[j].value = ((daq->rx_buffer[1] << 8) | (daq->rx_buffer[2]));// & 0x0FFF;
-            // 
+            // the i-th read result corresponds to the last ADC data point (i-1)
+            daq->samples[j].value = ((xfer_rx_mem[i*3 + 1] << 8) | (xfer_rx_mem[i*3 + 2]));// & 0x0FFF;
         }
-        // udelay(1);
     }
 }
 
@@ -539,6 +472,7 @@ static void amc7812_write_reg(Amc7812_t* daq, unsigned char reg_addr, unsigned i
     daq->tx_buffer[1] = (reg_value >> 8) & 0xFF;
     daq->tx_buffer[2] = reg_value & 0xFF;
 
+    udelay(25);
     amc7812_spi_xfer(daq);
 }
 
